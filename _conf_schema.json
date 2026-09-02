@@ -1,0 +1,49 @@
+{
+  "vrc_username": {
+    "description": "VRChat 登录邮箱/用户名（可选，配置后可在插件启动时自动登录；也可直接用 /vrc登录 指令登录）",
+    "type": "string",
+    "hint": "例如：example@email.com",
+    "default": ""
+  },
+  "vrc_password": {
+    "description": "VRChat 登录密码（可选，配置后可在插件启动时自动登录）",
+    "type": "string",
+    "hint": "注意：会明文保存在 AstrBot 配置中，请谨慎使用",
+    "default": ""
+  },
+  "app_name": {
+    "description": "调用 VRChat API 时的应用标识名（User-Agent）",
+    "type": "string",
+    "default": "astrbot-plugin-vrc-tool"
+  },
+  "request_interval": {
+    "description": "VRChat API 请求最小间隔（秒），建议保持 1 以上避免触发风控",
+    "type": "int",
+    "hint": "最小 0，单位秒",
+    "default": 1
+  },
+  "join_review_enabled": {
+    "description": "是否启用入群审核功能",
+    "type": "bool",
+    "hint": "开启后，配置了映射的玩家群收到加群申请时会自动查询并转发管理群审核",
+    "default": false
+  },
+  "review_groups": {
+    "description": "玩家群->管理群映射条目，格式：玩家群号:管理群1,管理群2（一个玩家群可对应多个管理群，可添加多条以区分不同玩家群）",
+    "type": "list",
+    "hint": "例如：[\"100001:200001,200002\", \"100002:200003\"]",
+    "default": []
+  },
+  "join_question": {
+    "description": "玩家群设置的入群问题（仅展示给管理群参考）",
+    "type": "string",
+    "hint": "例如：请输入你的 VRChat 玩家昵称或玩家ID",
+    "default": ""
+  },
+  "review_expire_seconds": {
+    "description": "审核消息的有效时间（秒），超时后引用回复无效",
+    "type": "int",
+    "hint": "默认 3600 秒（1小时）",
+    "default": 3600
+  }
+}

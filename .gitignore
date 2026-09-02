@@ -1,0 +1,12 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 运行时敏感数据（登录凭据/会话，切勿提交）
+auth.json
+review_data.json
+
+# 本地杂项
+*.log
+*.zip
+.DS_Store
