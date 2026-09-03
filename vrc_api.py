@@ -371,30 +371,55 @@ class VRCApi:
     # ------------------------------------------------------------------ #
     # 查询接口
     # ------------------------------------------------------------------ #
-    async def query_user(self, query: str) -> dict:
-        """按玩家昵称或玩家ID查询玩家完整信息。会话过期时自动重新登录并重试一次。"""
+    async def query_user(self, query: str, strict_match: bool = False) -> dict:
+        """按玩家昵称或玩家ID查询玩家完整信息。
+
+        strict_match=True 时必须精准匹配昵称，否则返回带 _not_found 标记的
+        占位 info（玩家ID 显示为"无法精准匹配查询到此人，请管理员手动审核"），
+        供入群审核使用。
+        会话过期时自动重新登录并重试一次。
+        """
         try:
-            return await self._query_user_inner(query)
+            return await self._query_user_inner(query, strict_match)
         except VRCLoginRequired:
             if await self.ensure_login() == "ok":
-                return await self._query_user_inner(query)
+                return await self._query_user_inner(query, strict_match)
             raise
 
-    async def _query_user_inner(self, query: str) -> dict:
+    async def _query_user_inner(self, query: str, strict_match: bool = False) -> dict:
         query = query.strip()
         if not query:
             raise ValueError("查询内容为空")
+
+        def _not_found_info():
+            return {
+                "displayName": query,
+                "id": "无法精准匹配查询到此人，请管理员手动审核",
+                "_not_found": True,
+            }
+
         if query.startswith("usr_"):
             uid = query
-        else:
-            status, data = await self._request("GET", "/users", params={"search": query, "n": 10})
-            users = data if isinstance(data, list) else []
-            picked = self._pick_exact(users, query)
-            if not picked:
-                raise ValueError(f"未找到昵称为 {query} 的玩家")
-            uid = picked.get("id", "")
+            status, user = await self._request("GET", f"/users/{uid}")
+            if status != 200 or not isinstance(user, dict) or not user.get("id"):
+                if strict_match:
+                    return _not_found_info()
+                raise ValueError(f"未找到玩家 {query}")
+            return await self._build_user_info(user)
+
+        status, data = await self._request("GET", "/users", params={"search": query, "n": 10})
+        users = data if isinstance(data, list) else []
+        picked = self._pick_exact(users, query, strict=strict_match)
+        if not picked:
+            # 严格模式精准匹配失败（或搜索结果为空）
+            if strict_match:
+                return _not_found_info()
+            raise ValueError(f"未找到昵称为 {query} 的玩家")
+        uid = picked.get("id", "")
         status, user = await self._request("GET", f"/users/{uid}")
         if status != 200 or not isinstance(user, dict) or not user.get("id"):
+            if strict_match:
+                return _not_found_info()
             raise ValueError(f"未找到玩家 {query}")
         return await self._build_user_info(user)
 
@@ -403,6 +428,18 @@ class VRCApi:
         info = {
             "displayName": user.get("displayName", "") or "",
             "id": uid,
+            # 玩家头像（VRChat User.userIcon 为玩家自定义头像 URL，无则为空串）
+            "iconUrl": user.get("userIcon", "") or "",
+            # 在线状态：state 为 offline/online；status 为 join me/active/ask me/busy
+            "state": user.get("state", "") or "",
+            "status": user.get("status", "") or "",
+            "statusDescription": user.get("statusDescription", "") or "",
+            # 玩家简介
+            "bio": user.get("bio", "") or "",
+            # 账号创建日期（ISO 8601 字符串）
+            "date_joined": user.get("date_joined", "") or "",
+            # 信誉状态（trustLevel）：VRChat API 无直接字段，从 tags 推断
+            "trustLevel": self._trust_level_from_tags(user.get("tags", [])),
         }
         # 正在使用的模型
         avatar_id = user.get("currentAvatar") or ""
@@ -482,14 +519,49 @@ class VRCApi:
     # 缓存辅助
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _pick_exact(objs, query):
+    def _pick_exact(objs, query, strict: bool = False):
+        """从搜索结果里精准匹配昵称/名称。
+
+        strict=True 时必须存在完全相等的项，否则返回 None；
+        strict=False（默认）时兜底返回第一项以保持旧有模糊匹配行为。
+        """
         q = str(query).strip().lower()
         for o in objs:
             if isinstance(o, dict):
                 name = str(o.get("displayName") or o.get("name") or "").strip().lower()
                 if name == q:
                     return o
+        if strict:
+            return None
         return objs[0] if objs else None
+
+    @staticmethod
+    def _trust_level_from_tags(tags) -> str:
+        """从 User.tags 推断 VRChat 信誉级别（trustLevel）。
+
+        VRChat API 的 User 对象没有直接的 trustLevel 字段，需从 tags 推断。
+        注意：信誉标签比实际等级低一级（legacy 命名）。
+        - system_trust_veteran -> 可信玩家（紫色 Trusted User）
+        - system_trust_trusted -> 知名玩家（橙色 Known User）
+        - system_trust_known   -> 玩家（绿色 User）
+        - system_trust_basic   -> 新玩家（蓝色 New User）
+        - 无任何 trust 标签    -> 游客（灰色 Visitor）
+        - system_troll         -> 劣迹玩家
+        """
+        if not isinstance(tags, list) or not tags:
+            return "游客"
+        tag_set = set(tags)
+        if "system_troll" in tag_set:
+            return "劣迹玩家"
+        if "system_trust_veteran" in tag_set:
+            return "可信玩家"
+        if "system_trust_trusted" in tag_set:
+            return "知名玩家"
+        if "system_trust_known" in tag_set:
+            return "玩家"
+        if "system_trust_basic" in tag_set:
+            return "新玩家"
+        return "游客"
 
     async def _get_avatar_name(self, avatar_id: str) -> str:
         now = time.monotonic()

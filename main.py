@@ -3,11 +3,14 @@
 功能：
 1. /vrc登录 <邮箱> <密码>  登录 VRChat（含两步验证处理，会话持久化不掉线）
 2. /vrc验证 <验证码>       提交邮箱/TOTP 验证码
-3. /vrc玩家 <昵称或ID>     查询玩家信息（昵称/ID/模型/展示群组/位置+房间ID）
+3. /vrc玩家 <昵称或ID>     查询玩家信息（头像/昵称/ID/状态/信誉/简介/创建日期/
+                          模型/展示群组/位置+房间ID，离线不显示位置）
 4. /vrc地图 <昵称或ID>     查询地图信息（图标/名字/ID/上传者）
-5. 入群审核：玩家群新成员回答问题后，自动查询其 VRChat 信息并发送到
+5. /vrc昵称同步 [开|关]    开关：审核通过后把入群答案同步为玩家群的群昵称
+6. /vrc添加 玩家群:管理群1,管理群2  动态添加玩家群→管理群映射（立即生效、持久化）
+7. 入群审核：玩家群新成员回答问题后，精准匹配查询其 VRChat 信息并发送到
    指定管理群；管理群成员引用审核消息回复「同意/拒绝」完成进群审核。
-   一个玩家群可配置对应多个管理群（配置条目：玩家群号:管理群1,管理群2）。
+   一个玩家群可配置对应多个管理群（WebUI 配置或 /vrc添加 指令）。
 """
 
 import json
@@ -38,13 +41,15 @@ CMD_VERIFY = "vrc验证"
 CMD_USER = "vrc玩家"
 CMD_WORLD = "vrc地图"
 CMD_STATUS = "vrc状态"
+CMD_NICK_SYNC = "vrc昵称同步"  # 同步入群答案为群昵称的开关
+CMD_ADD_GROUP = "vrc添加"      # 动态添加玩家群:管理群映射
 
 
 @register(
     PLUGIN_NAME,
     "vrchat_tool",
     "VRChat 玩家/地图信息查询与玩家群入群审核",
-    "1.0.0",
+    "1.0.3",
     "https://vrchat.community/",
 )
 class VrcToolPlugin(Star):
@@ -56,6 +61,9 @@ class VrcToolPlugin(Star):
         self._data_path = os.path.join(self._data_dir, "review_data.json")
         self._pending: dict[str, str] = {}  # 审核消息ID -> 申请flag
         self._requests: dict[str, dict] = {}  # 申请flag -> 申请信息（含处理状态）
+        # 防御性初始化（实际值由 _load_data 从数据文件恢复）
+        self._extra_groups: list[str] = []  # 指令动态添加的玩家群:管理群映射
+        self._nick_sync_enabled = False     # 审核通过后是否同步入群答案为群昵称
 
         self.vrc = VRCApi(
             self._data_dir,
@@ -67,7 +75,7 @@ class VrcToolPlugin(Star):
         )
 
     async def initialize(self):
-        logger.info("[VRC工具] 插件已加载（v1.0.0）")
+        logger.info("[VRC工具] 插件已加载（v1.0.3）")
         self._load_data()
         try:
             state = await self.vrc.ensure_login()
@@ -89,9 +97,10 @@ class VrcToolPlugin(Star):
     # ================================================================== #
     # 指令
     # ================================================================== #
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command(CMD_LOGIN)
     async def vrc_login_cmd(self, event: AstrMessageEvent):
-        """登录 VRChat：/vrc登录 <邮箱> <密码>"""
+        """登录 VRChat：/vrc登录 <邮箱> <密码>（仅管理员）"""
         extra = self._strip_cmd(event, CMD_LOGIN)
         parts = (extra or "").split(None, 1)
         if len(parts) < 2:
@@ -123,9 +132,10 @@ class VrcToolPlugin(Star):
             logger.error(f"登录异常: {e}")
             yield event.plain_result(f"❌ 登录异常：{e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command(CMD_VERIFY)
     async def vrc_verify_cmd(self, event: AstrMessageEvent):
-        """提交两步验证码：/vrc验证 <验证码>"""
+        """提交两步验证码：/vrc验证 <验证码>（仅管理员）"""
         code = self._strip_cmd(event, CMD_VERIFY).strip()
         if not code:
             yield event.plain_result(f"用法：/{CMD_VERIFY} <验证码>")
@@ -184,6 +194,9 @@ class VrcToolPlugin(Star):
             logger.error(f"查询玩家失败: {e}")
             yield event.plain_result(f"❌ 查询失败：{e}")
             return
+        # 有头像就先发图（iconUrl 为空则跳过）
+        if info.get("iconUrl"):
+            yield event.image_result(info["iconUrl"])
         yield event.plain_result(self._format_user_info(info))
 
     @filter.command(CMD_WORLD)
@@ -213,6 +226,99 @@ class VrcToolPlugin(Star):
             f"▸ 名字　　：{info.get('name', '')}\n"
             f"▸ 地图ID　：{info.get('id', '')}\n"
             f"▸ 上传者　：{info.get('authorName', '')}"
+        )
+
+    @filter.command(CMD_NICK_SYNC)
+    async def vrc_nick_sync_cmd(self, event: AstrMessageEvent):
+        """切换"审核通过后把入群答案同步为群昵称"的开关：/vrc昵称同步 [开|关]
+
+        仅在管理群内触发；不带参数时查询当前状态；带"开"开启，带"关"关闭。
+        """
+        # 仅允许在配置的管理群内触发
+        gid = str(event.get_group_id() or "")
+        if not gid or gid not in self._all_admin_groups():
+            yield event.plain_result("该指令仅在管理群内可用。")
+            return
+        arg = self._strip_cmd(event, CMD_NICK_SYNC).strip().lower()
+        if arg in ("开", "on", "1", "true", "enable"):
+            self._nick_sync_enabled = True
+            self._save_data()
+            yield event.plain_result(
+                "✅ 已开启「入群答案同步为群昵称」。\n"
+                "管理员同意进群后，会把玩家填写的入群答案设为其群昵称。"
+            )
+            return
+        if arg in ("关", "off", "0", "false", "disable"):
+            self._nick_sync_enabled = False
+            self._save_data()
+            yield event.plain_result("✅ 已关闭「入群答案同步为群昵称」。")
+            return
+        if arg:
+            yield event.plain_result(
+                f"用法：/{CMD_NICK_SYNC} [开|关]\n当前状态："
+                f"{'开启' if self._nick_sync_enabled else '关闭'}"
+            )
+            return
+        # 不带参数：仅查询
+        yield event.plain_result(
+            "「入群答案同步为群昵称」当前状态："
+            f"{'开启 ✅' if self._nick_sync_enabled else '关闭 ❌'}\n"
+            f"使用 /{CMD_NICK_SYNC} 开 启用，/{CMD_NICK_SYNC} 关 停用。"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command(CMD_ADD_GROUP)
+    async def vrc_add_group_cmd(self, event: AstrMessageEvent):
+        """动态添加玩家群:管理群映射：/vrc添加 玩家群号:管理群号1,管理群号2（仅管理员）
+
+        可多次调用累加；玩家群已存在则合并管理群。立即生效并持久化。
+        """
+        arg = self._strip_cmd(event, CMD_ADD_GROUP).strip()
+        if not arg:
+            yield event.plain_result(
+                f"用法：/{CMD_ADD_GROUP} 玩家群号:管理群号1,管理群号2\n"
+                "示例：/vrc添加 123456:111,222,333"
+            )
+            return
+        # 校验格式：必须含冒号，玩家群为数字，管理群为逗号分隔的数字
+        if ":" not in arg:
+            yield event.plain_result("❌ 格式错误，需用冒号分隔，例如：玩家群号:管理群号1,管理群号2")
+            return
+        pg, ag = arg.split(":", 1)
+        pg = pg.strip()
+        admins = [a.strip() for a in ag.split(",") if a.strip()]
+        if not pg or not admins:
+            yield event.plain_result("❌ 玩家群号或管理群号为空。")
+            return
+        item = f"{pg}:{','.join(admins)}"
+        # 合并到 _extra_groups（避免重复）
+        merged = False
+        for i, exist in enumerate(self._extra_groups):
+            if not exist:
+                continue
+            exist = str(exist).strip()
+            if not exist or ":" not in exist:
+                continue
+            e_pg, _ = exist.split(":", 1)
+            if e_pg.strip() == pg:
+                # 合并管理群
+                e_admins = [a.strip() for a in exist.split(":", 1)[1].split(",") if a.strip()]
+                for a in admins:
+                    if a not in e_admins:
+                        e_admins.append(a)
+                self._extra_groups[i] = f"{pg}:{','.join(e_admins)}"
+                merged = True
+                break
+        if not merged:
+            self._extra_groups.append(item)
+        self._save_data()
+        # 输出当前该玩家群对应的所有管理群
+        mapping = self._get_review_mapping()
+        cur_admins = mapping.get(pg, [])
+        yield event.plain_result(
+            f"✅ 已添加玩家群 {pg} 的管理群映射。\n"
+            f"当前管理群：{','.join(cur_admins) if cur_admins else '（无）'}\n"
+            f"（立即生效，已持久化到 {self._data_path}）"
         )
 
     # ================================================================== #
@@ -268,12 +374,16 @@ class VrcToolPlugin(Star):
         group_name = await self._safe_get_group_name(event.bot, group_id)
         applicant_name = await self._safe_get_stranger_name(event.bot, user_id)
 
-        # 查询 VRChat 玩家信息（尽力而为，失败也不阻塞人工审核）
+        # 查询 VRChat 玩家信息（精准匹配：入群审核必须严格匹配昵称，
+        # 查不到时玩家ID 显示为"无法精准匹配查询到此人，请管理员手动审核"，
+        # 不阻塞人工审核流程）
         vrc_text = ""
+        vrc_icon = ""
         try:
             login_state = await self.vrc.ensure_login()
             if login_state == "ok":
-                info = await self.vrc.query_user(answer or user_id)
+                info = await self.vrc.query_user(answer or user_id, strict_match=True)
+                vrc_icon = info.get("iconUrl", "") or ""
                 vrc_text = self._format_user_info(info)
             elif login_state == "2fa":
                 vrc_text = (
@@ -292,6 +402,9 @@ class VrcToolPlugin(Star):
             lines.append(f"▸ 入群问题：{question}")
         lines.append(f"▸ 申请答案：{answer or '（空）'}")
         lines.append("──── VRChat 信息 ────")
+        # 有头像时在 VRChat 信息前嵌入 CQ 图片
+        if vrc_icon:
+            lines.append(f"[CQ:image,file={vrc_icon}]")
         lines.append(vrc_text)
         lines.append("────────────────────")
         lines.append("请引用本消息回复「同意」或「拒绝」进行审核。")
@@ -379,6 +492,21 @@ class VrcToolPlugin(Star):
                 f"[入群审核] 管理群 {group_id} 由 {operator} "
                 f"{'同意' if decision else '拒绝'}了 {req.get('user_id')} 的申请"
             )
+            # 同意进群后，若开启昵称同步，把入群答案设为玩家群的群昵称
+            if decision and getattr(self, "_nick_sync_enabled", False):
+                applicant_qq = str(req.get("user_id", "") or "")
+                applicant_group = str(req.get("group_id", "") or "")
+                nick = str(req.get("answer", "") or "").strip()
+                if applicant_qq and applicant_group and nick:
+                    await self._safe_set_group_card(
+                        event.bot, applicant_group, applicant_qq, nick
+                    )
+                    await self._send_group(
+                        event.bot,
+                        group_id,
+                        f"✏️ 已将玩家群 {applicant_group} 中 {applicant_qq} 的群昵称"
+                        f"同步为入群答案：{nick}",
+                    )
         except Exception as e:
             logger.error(f"[入群审核] 处理失败: {e}")
             await self._send_group(
@@ -417,14 +545,51 @@ class VrcToolPlugin(Star):
         return f"⚠️ VRChat 登录失败，请检查账号信息后使用 /{CMD_LOGIN} 重新登录。"
 
     def _format_user_info(self, info: dict) -> str:
-        """格式化玩家信息（/vrc玩家 与入群审核共用）。在线才显示位置与房间ID。"""
+        """格式化玩家信息（/vrc玩家 与入群审核共用）。
+
+        - 头像通过 iconUrl 输出（有就输出，没有就不输出，由调用方发图）
+        - 用 state 和 status 输出状态：offline=⚫；online 时
+          join me=🟢 / active=🔵 / ask me=🟡 / busy=🔴
+        - status 后跟 statusDescription（玩家自定义状态）
+        - bio 输出简介，date_joined 输出账号创建日期
+        - 在线才显示位置与房间ID
+        - _not_found（精准匹配失败）只输出昵称与玩家ID提示
+        """
         lines = ["━━━ VRChat 玩家 ━━━"]
         lines.append(f"▸ 昵称　　：{info.get('displayName', '')}")
         lines.append(f"▸ 玩家ID　：{info.get('id', '')}")
+
+        # 精准匹配失败：只输出昵称与玩家ID提示，其余字段不显示
+        if info.get("_not_found"):
+            return "\n".join(lines)
+
+        # 状态
+        state_emoji = self._state_emoji(
+            info.get("state", ""), info.get("status", "")
+        )
+        if state_emoji:
+            desc = info.get("statusDescription", "")
+            lines.append(
+                f"▸ 状态　　：{state_emoji} {desc}" if desc else f"▸ 状态　　：{state_emoji}"
+            )
+
+        # 信誉状态（trustLevel，放在状态行下一行）
+        if info.get("trustLevel"):
+            lines.append(f"▸ 信誉　　：{info['trustLevel']}")
+
+        # 简介
+        if info.get("bio"):
+            lines.append(f"▸ 简介　　：{info['bio']}")
+        # 账号创建日期
+        if info.get("date_joined"):
+            lines.append(f"▸ 账号创建：{info['date_joined']}")
+        # 正在使用的模型
         if info.get("avatar"):
             lines.append(f"▸ 正在使用的模型：{info['avatar']}")
+        # 正在展示的群组
         if info.get("group"):
             lines.append(f"▸ 正在展示的群组：{info['group']}（{info.get('group_id', '')}）")
+        # 当前位置 + 房间ID（不在线则不展示）
         if info.get("world"):
             lines.append(f"▸ 当前位置：{info['world']}（{info.get('world_id', '')}）")
             lines.append(f"▸ 房间ID　：{info.get('instance_id', '')}")
@@ -432,14 +597,38 @@ class VrcToolPlugin(Star):
             lines.append("（该玩家当前离线或未公开位置，不显示位置与房间ID）")
         return "\n".join(lines)
 
+    @staticmethod
+    def _state_emoji(state: str, status: str) -> str:
+        """根据 state 和 status 返回状态 emoji。
+
+        - state=offline -> ⚫
+        - state=online 时按 status 输出：join me=🟢 / active=🔵 / ask me=🟡 / busy=🔴
+        - 其余情况返回空串（不输出状态行）
+        """
+        if state == "offline":
+            return "⚫"
+        if state == "online":
+            mapping = {
+                "join me": "🟢",
+                "active": "🔵",
+                "ask me": "🟡",
+                "busy": "🔴",
+            }
+            return mapping.get(status, "")
+        return ""
+
     def _get_review_mapping(self) -> dict:
-        """解析配置：玩家群号 -> 管理群号列表。条目格式：玩家群:管理群1,管理群2"""
+        """解析玩家群号 -> 管理群号列表的映射。
+
+        来源合并：WebUI 配置 review_groups + 指令动态添加的 _extra_groups。
+        条目格式：玩家群:管理群1,管理群2（无冒号时视为仅玩家群，无管理群）
+        """
         mapping: dict[str, list] = {}
-        items = self.config.get("review_groups", []) or []
-        for item in items:
-            if not item:
-                continue
+
+        def _merge(item: str):
             item = str(item).strip()
+            if not item:
+                return
             if ":" in item:
                 pg, ag = item.split(":", 1)
                 pg = pg.strip()
@@ -450,6 +639,14 @@ class VrcToolPlugin(Star):
                         mapping[pg].append(a)
             else:
                 mapping.setdefault(item, [])
+
+        # 配置项
+        items = self.config.get("review_groups", []) or []
+        for item in items:
+            _merge(item)
+        # 指令动态添加
+        for item in getattr(self, "_extra_groups", []) or []:
+            _merge(item)
         return mapping
 
     def _all_admin_groups(self) -> set:
@@ -488,6 +685,21 @@ class VrcToolPlugin(Star):
         except Exception as e:
             logger.error(f"[入群审核] 获取申请人昵称失败 {user_id}: {e}")
             return ""
+
+    @staticmethod
+    async def _safe_set_group_card(bot, group_id: str, user_id: str, card: str):
+        """通过 OneBot set_group_card 设置群名片（群昵称）。失败仅记录日志。"""
+        try:
+            await bot.set_group_card(
+                group_id=int(group_id), user_id=int(user_id), card=card
+            )
+            logger.info(
+                f"[入群审核] 已设置群 {group_id} 中 {user_id} 的群昵称为：{card}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[入群审核] 设置群昵称失败 group={group_id} user={user_id}: {e}"
+            )
 
     @staticmethod
     def _extract_answer(comment: str, question: str = "") -> str:
@@ -577,6 +789,10 @@ class VrcToolPlugin(Star):
     def _load_data(self):
         self._pending = {}
         self._requests = {}
+        # 通过指令动态添加的玩家群:管理群映射条目（列表，元素如 "玩家群:管理1,管理2"）
+        self._extra_groups: list[str] = []
+        # 是否在审核通过后把入群答案同步为群昵称
+        self._nick_sync_enabled = False
         try:
             if os.path.exists(self._data_path):
                 with open(self._data_path, encoding="utf-8") as f:
@@ -584,6 +800,8 @@ class VrcToolPlugin(Star):
                 if isinstance(data, dict):
                     self._pending = data.get("pending") or {}
                     self._requests = data.get("requests") or {}
+                    self._extra_groups = list(data.get("extra_groups") or [])
+                    self._nick_sync_enabled = bool(data.get("nick_sync_enabled", False))
                 expire = int(self.config.get("review_expire_seconds", 3600) or 3600)
                 now = int(time.time())
                 for mid in list(self._pending):
@@ -604,7 +822,12 @@ class VrcToolPlugin(Star):
         try:
             with open(self._data_path, "w", encoding="utf-8") as f:
                 json.dump(
-                    {"pending": self._pending, "requests": self._requests},
+                    {
+                        "pending": self._pending,
+                        "requests": self._requests,
+                        "extra_groups": self._extra_groups,
+                        "nick_sync_enabled": self._nick_sync_enabled,
+                    },
                     f,
                     ensure_ascii=False,
                     indent=2,
