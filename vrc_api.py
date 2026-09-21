@@ -425,6 +425,11 @@ class VRCApi:
 
     async def _build_user_info(self, user: dict) -> dict:
         uid = user.get("id", "")
+        # 信誉状态（trustLevel）：VRChat API 无该字段，与 VRCX 一致从
+        # tags + developerType 推断
+        trust = self._trust_level_from_tags(
+            user.get("tags", []), user.get("developerType", "") or ""
+        )
         info = {
             "displayName": user.get("displayName", "") or "",
             "id": uid,
@@ -439,7 +444,9 @@ class VRCApi:
             # 账号创建日期（ISO 8601 字符串）
             "date_joined": user.get("date_joined", "") or "",
             # 信誉状态（trustLevel）：VRChat API 无直接字段，从 tags 推断
-            "trustLevel": self._trust_level_from_tags(user.get("tags", [])),
+            "trustLevel": trust["trustLevel"],
+            # 信誉附加标注（劣迹/疑似劣迹/管理员等），与 VRCX 一致不并入等级
+            "trustFlags": trust["trustFlags"],
         }
         # 正在使用的模型
         avatar_id = user.get("currentAvatar") or ""
@@ -535,33 +542,55 @@ class VRCApi:
             return None
         return objs[0] if objs else None
 
-    @staticmethod
-    def _trust_level_from_tags(tags) -> str:
-        """从 User.tags 推断 VRChat 信誉级别（trustLevel）。
+    #: 开发者身份 -> 中文标注（VRCX 把这些身份统一按其 VIP 颜色展示）
+    DEVELOPER_TYPE_LABELS = {
+        "moderator": "管理员",
+        "internal": "官方人员",
+        "trusted": "可信开发者",
+    }
 
-        VRChat API 的 User 对象没有直接的 trustLevel 字段，需从 tags 推断。
-        注意：信誉标签比实际等级低一级（legacy 命名）。
+    @classmethod
+    def _trust_level_from_tags(cls, tags, developer_type: str = "") -> dict:
+        """从 User.tags 推断 VRChat 信誉级别（对齐 VRCX 的 computeTrustLevel）。
+
+        VRChat API 的 User 对象没有 trustLevel 字段，VRCX 同样是从 tags 推断，
+        两者映射一致（信誉标签为 legacy 命名，比展示等级低一级）：
         - system_trust_veteran -> 可信玩家（紫色 Trusted User）
         - system_trust_trusted -> 知名玩家（橙色 Known User）
         - system_trust_known   -> 玩家（绿色 User）
         - system_trust_basic   -> 新玩家（蓝色 New User）
         - 无任何 trust 标签    -> 游客（灰色 Visitor）
-        - system_troll         -> 劣迹玩家
+
+        与 VRCX 一致，system_troll / system_probable_troll 与开发者身份不改变
+        信誉等级本身，只作为附加标注返回：
+        - 返回 {"trustLevel": 信誉等级, "trustFlags": [附加标注...]}
         """
-        if not isinstance(tags, list) or not tags:
-            return "游客"
-        tag_set = set(tags)
-        if "system_troll" in tag_set:
-            return "劣迹玩家"
+        tag_set = set(tags) if isinstance(tags, list) else ()
+
         if "system_trust_veteran" in tag_set:
-            return "可信玩家"
-        if "system_trust_trusted" in tag_set:
-            return "知名玩家"
-        if "system_trust_known" in tag_set:
-            return "玩家"
-        if "system_trust_basic" in tag_set:
-            return "新玩家"
-        return "游客"
+            level = "可信玩家"
+        elif "system_trust_trusted" in tag_set:
+            level = "知名玩家"
+        elif "system_trust_known" in tag_set:
+            level = "玩家"
+        elif "system_trust_basic" in tag_set:
+            level = "新玩家"
+        else:
+            level = "游客"
+
+        flags = []
+        if "system_troll" in tag_set:
+            flags.append("劣迹")
+        elif "system_probable_troll" in tag_set:
+            flags.append("疑似劣迹")
+        if "admin_moderator" in tag_set:
+            flags.append("管理员")
+        else:
+            label = cls.DEVELOPER_TYPE_LABELS.get(developer_type or "")
+            if label:
+                flags.append(label)
+
+        return {"trustLevel": level, "trustFlags": flags}
 
     async def _get_avatar_name(self, avatar_id: str) -> str:
         now = time.monotonic()

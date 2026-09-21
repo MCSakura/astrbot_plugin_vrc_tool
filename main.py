@@ -573,9 +573,14 @@ class VrcToolPlugin(Star):
                 f"▸ 状态　　：{state_emoji} {desc}" if desc else f"▸ 状态　　：{state_emoji}"
             )
 
-        # 信誉状态（trustLevel，放在状态行下一行）
+        # 信誉状态（trustLevel，放在状态行下一行；劣迹/管理员等作为附加标注）
         if info.get("trustLevel"):
-            lines.append(f"▸ 信誉　　：{info['trustLevel']}")
+            flags = "、".join(info.get("trustFlags") or [])
+            lines.append(
+                f"▸ 信誉　　：{info['trustLevel']}（{flags}）"
+                if flags
+                else f"▸ 信誉　　：{info['trustLevel']}"
+            )
 
         # 简介
         if info.get("bio"):

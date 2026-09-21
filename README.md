@@ -117,7 +117,7 @@ astrbot_plugin_vrc_tool/
 |---|---|---|
 | 头像 | `userIcon` | 玩家自定义头像，有则输出图片，无则不输出 |
 | 状态 | `state` + `status` | offline=⚫；online 时 join me=🟢 / active=🔵 / ask me=🟡 / busy=🔴，后跟 `statusDescription` |
-| 信誉 | `tags` 推断 | 可信玩家/知名玩家/玩家/新玩家/游客/劣迹玩家 |
+| 信誉 | `tags` + `developerType` 推断（逻辑同 VRCX） | 等级：可信玩家/知名玩家/玩家/新玩家/游客；附加标注（括号内）：劣迹、疑似劣迹、管理员/官方人员/可信开发者 |
 | 简介 | `bio` | 玩家个人简介 |
 | 账号创建 | `date_joined` | ISO 8601 日期 |
 | 当前位置/房间ID | `location` | 仅在线且公开位置时显示；离线或未公开时显示提示 |
