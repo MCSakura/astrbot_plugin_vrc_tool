@@ -423,6 +423,39 @@ class VRCApi:
             raise ValueError(f"未找到玩家 {query}")
         return await self._build_user_info(user)
 
+    async def query_user_raw(self, query: str) -> dict:
+        """按玩家昵称或玩家ID查询，返回 VRChat API 的原始 JSON。
+
+        供 /vrc原始 排查字段使用（原始 JSON 只含 tags 等字段，
+        没有 VRCX 本地计算的 $trustLevel）。
+        """
+        try:
+            return await self._query_user_raw_inner(query)
+        except VRCLoginRequired:
+            if await self.ensure_login() == "ok":
+                return await self._query_user_raw_inner(query)
+            raise
+
+    async def _query_user_raw_inner(self, query: str) -> dict:
+        query = query.strip()
+        if not query:
+            raise ValueError("查询内容为空")
+
+        uid = query
+        if not query.startswith("usr_"):
+            status, data = await self._request(
+                "GET", "/users", params={"search": query, "n": 10}
+            )
+            users = data if isinstance(data, list) else []
+            picked = self._pick_exact(users, query)
+            if not picked:
+                raise ValueError(f"未找到昵称为 {query} 的玩家")
+            uid = picked.get("id", "")
+        status, user = await self._request("GET", f"/users/{uid}")
+        if status != 200 or not isinstance(user, dict) or not user.get("id"):
+            raise ValueError(f"未找到玩家 {query}")
+        return user
+
     async def _build_user_info(self, user: dict) -> dict:
         uid = user.get("id", "")
         # 信誉状态（trustLevel）：VRChat API 无该字段，与 VRCX 一致从

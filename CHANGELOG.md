@@ -2,6 +2,13 @@
 
 本文记录 astrbot_plugin_vrc_tool 的版本变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [1.0.6] - 2026-09-22
+
+### 新增
+
+- 指令 `/vrc原始 <昵称或玩家ID>`：输出 VRChat API 返回的玩家原始 JSON，便于排查字段
+  （例如信誉相关的 `tags`）。仅管理员可用，且仅在私聊生效，群聊触发会被拒绝。
+
 ## [1.0.5] - 2026-09-22
 
 ### 变更

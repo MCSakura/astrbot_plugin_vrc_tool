@@ -11,6 +11,7 @@
 7. 入群审核：玩家群新成员回答问题后，精准匹配查询其 VRChat 信息并发送到
    指定管理群；管理群成员引用审核消息回复「同意/拒绝」完成进群审核。
    一个玩家群可配置对应多个管理群（WebUI 配置或 /vrc添加 指令）。
+8. /vrc原始 <昵称或ID>     输出玩家原始 JSON（仅管理员、仅私聊，排查字段用）
 """
 
 import json
@@ -43,6 +44,7 @@ CMD_WORLD = "vrc地图"
 CMD_STATUS = "vrc状态"
 CMD_NICK_SYNC = "vrc昵称同步"  # 同步入群答案为群昵称的开关
 CMD_ADD_GROUP = "vrc添加"      # 动态添加玩家群:管理群映射
+CMD_RAW = "vrc原始"            # 输出玩家原始 JSON（排查字段用，仅管理员+私聊）
 
 
 @register(
@@ -198,6 +200,38 @@ class VrcToolPlugin(Star):
         if info.get("iconUrl"):
             yield event.image_result(info["iconUrl"])
         yield event.plain_result(self._format_user_info(info))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command(CMD_RAW)
+    async def vrc_raw_cmd(self, event: AstrMessageEvent):
+        """输出玩家原始 JSON（仅管理员、仅私聊）：/vrc原始 <玩家昵称或玩家ID>
+
+        用于排查 VRChat API 实际返回了哪些字段（例如信誉相关的 tags）。
+        """
+        if str(event.get_group_id() or ""):
+            yield event.plain_result("该指令仅限私聊使用。")
+            return
+        query = self._strip_cmd(event, CMD_RAW).strip()
+        if not query:
+            yield event.plain_result(f"用法：/{CMD_RAW} <玩家昵称或玩家ID>")
+            return
+        state = await self.vrc.ensure_login()
+        if state != "ok":
+            yield event.plain_result(self._login_prompt(state))
+            return
+        try:
+            raw = await self.vrc.query_user_raw(query)
+        except VRCLoginRequired as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        except Exception as e:
+            logger.error(f"查询玩家原始数据失败: {e}")
+            yield event.plain_result(f"❌ 查询失败：{e}")
+            return
+        yield event.plain_result(
+            f"━━━ 原始 JSON：{raw.get('displayName', '')} ━━━\n"
+            f"{json.dumps(raw, ensure_ascii=False, indent=2)}"
+        )
 
     @filter.command(CMD_WORLD)
     async def vrc_world_cmd(self, event: AstrMessageEvent):

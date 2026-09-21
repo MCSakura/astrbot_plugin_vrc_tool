@@ -2,7 +2,7 @@ name: astrbot_plugin_vrc_tool
 display_name: VRChat玩家查询及审核
 desc: 查询 VRChat 玩家/地图信息，并支持玩家群入群审核
 short_desc: VRChat 信息查询与入群审核
-version: 1.0.5
+version: 1.0.6
 author: mcsakura_樱佬
 support_platforms:
   - aiocqhttp

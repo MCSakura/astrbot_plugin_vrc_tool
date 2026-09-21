@@ -65,6 +65,7 @@ astrbot_plugin_vrc_tool/
 | `/vrc地图 <昵称或ID>` | 所有人 | 查询地图信息 |
 | `/vrc昵称同步 [开\|关]` | 仅管理群 | 开关：审核通过后把入群答案同步为群昵称 |
 | `/vrc添加 玩家群:管理群1,管理群2` | 仅管理员 | 动态添加玩家群→管理群映射 |
+| `/vrc原始 <昵称或ID>` | 仅管理员（仅私聊） | 输出玩家原始 JSON，排查 VRChat API 实际返回字段（如 `tags`）时用 |
 
 > 「管理员」指 AstrBot 平台管理员（`@filter.permission_type(filter.PermissionType.ADMIN)`）。
 > 「管理群」指在 `review_groups` 或 `/vrc添加` 中配置为某玩家群对应的管理群号。
@@ -248,7 +249,7 @@ review_groups:
 - VRChat API 为社区维护的非官方接口，请遵守 [VRChat Creator Guidelines](https://hello.vrchat.com/creator-guidelines#api-usage)，控制请求频率
 - `auth.json` 中保存了 VRChat 登录凭据与会话 cookie，请勿外泄；不要在不受信任的环境运行
 - 入群审核的「同意 / 拒绝」对管理群内所有成员开放，请确保管理群成员可信
-- `/vrc登录`、`/vrc验证`、`/vrc添加` 已限制为**管理员**权限，普通成员无法触发
+- `/vrc登录`、`/vrc验证`、`/vrc添加`、`/vrc原始` 已限制为**管理员**权限，普通成员无法触发；其中 `/vrc原始` 还会拒绝群聊触发，只能在私聊使用
 
 ---
 
