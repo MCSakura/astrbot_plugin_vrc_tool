@@ -51,7 +51,7 @@ CMD_RAW = "vrc原始"            # 输出玩家原始 JSON（排查字段用，�
     PLUGIN_NAME,
     "vrchat_tool",
     "VRChat 玩家/地图信息查询与玩家群入群审核",
-    "1.0.3",
+    "1.0.6",
     "https://vrchat.community/",
 )
 class VrcToolPlugin(Star):
@@ -77,7 +77,7 @@ class VrcToolPlugin(Star):
         )
 
     async def initialize(self):
-        logger.info("[VRC工具] 插件已加载（v1.0.3）")
+        logger.info("[VRC工具] 插件已加载（v1.0.6）")
         self._load_data()
         try:
             state = await self.vrc.ensure_login()

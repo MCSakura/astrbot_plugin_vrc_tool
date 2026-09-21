@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - 非 AstrBot 环境
         logger.addHandler(_console_handler)
         logger.propagate = False
 
-VERSION = "1.0.0"
+VERSION = "1.0.6"
 BASE_URL = "https://api.vrchat.cloud/api/1"
 AUTH_FILE = "auth.json"
 CACHE_TTL = 3600  # 秒
